@@ -187,11 +187,12 @@ typedef size_t ssize_t;
 /* http://concurrencykit.org/ */
 /* Note that it has a VERY BAD performance on the "Change" test, */
 /* so we disable it in the graphs until further investigation */
-/* #define USE_CK */
+#define USE_CK
 #if defined(USE_CK) && defined(__linux)
 /* if you enable it, ensure to link also with the -lck option */
 extern "C" {
 #include <ck_hs.h>
+#include <ck_rhs.h>
 }
 #endif
 
@@ -302,6 +303,7 @@ struct cube_object* CUBE;
 #endif
 #ifdef USE_CK
 struct ck_object* CK;
+struct ck_object* CK_RHS;
 
 static void* hs_malloc(size_t r)
 {
@@ -431,6 +433,7 @@ struct cube* cube = 0;
 #endif
 #ifdef USE_CK
 ck_hs_t ck;
+ck_rhs_t rhs_ck;
 #endif
 
 /******************************************************************************/
@@ -615,8 +618,9 @@ const char* ORDER_NAME[ORDER_MAX] = {
 #endif
 #ifdef USE_CK
 #define DATA_CK 18
+#define DATA_CK_RHS 19
 #endif
-#define DATA_MAX 19
+#define DATA_MAX 20
 
 const char* DATA_NAME[DATA_MAX] = {
 	"tommy-hashtable",
@@ -638,6 +642,7 @@ const char* DATA_NAME[DATA_MAX] = {
 	"tesseract",
 	"googlelibchash",
 	"concurrencykit",
+	"concurrencykit-rhs"
 };
 
 /** 
@@ -933,40 +938,12 @@ void test_alloc(void)
 #ifdef USE_CK
 	COND(DATA_CK) {
 		CK = (struct ck_object*)malloc(sizeof(struct ck_object) * the_max);
-		/* Adding CK_HS_MODE_DELETE makes the performance worse */
-		/* when the number of elements is near and just a little lower than a */
-		/* power of 2. For example, with 63095 elements: */
-/*
-63095 ck forward
-   forward,     insert,           ck,  200 [ns]
-   forward,     change,           ck, 23977 [ns] <<<<<
-   forward,        hit,           ck,  338 [ns]
-   forward,       miss,           ck,  209 [ns]
-   forward,     remove,           ck,  325 [ns]
-63095 ck random
-    random,     insert,           ck,  197 [ns]
-    random,     change,           ck, 24025 [ns] <<<<<
-    random,        hit,           ck,  342 [ns]
-    random,       miss,           ck,  206 [ns]
-    random,     remove,           ck,  337 [ns]
-*/
-		/* Without CK_HS_MODE_DELETE performance are better, but still */
-		/* very slow: */
-/*
-63095 ck forward
-   forward,     insert,           ck,  193 [ns]
-   forward,     change,           ck, 3102 [ns] <<<<<
-   forward,        hit,           ck,  344 [ns]
-   forward,       miss,           ck, 3330 [ns] <<<<<
-   forward,     remove,           ck,  327 [ns]
-63095 ck random
-    random,     insert,           ck,  193 [ns]
-    random,     change,           ck, 2984 [ns] <<<<<
-    random,        hit,           ck,  340 [ns]
-    random,       miss,           ck, 3261 [ns] <<<<<
-    random,     remove,           ck,  341 [ns]
-*/
 		ck_hs_init(&ck, CK_HS_MODE_OBJECT, hs_hash, hs_compare, &my_allocator, 32, 0);
+	}
+
+	COND(DATA_CK_RHS) {
+		CK_RHS = (struct ck_object*)malloc(sizeof(struct ck_object) * the_max);
+		ck_rhs_init(&rhs_ck, CK_RHS_MODE_OBJECT, hs_hash, hs_compare, &my_allocator, 32, 0);
 	}
 #endif
 }
@@ -1090,6 +1067,11 @@ void test_free(void)
 	COND(DATA_CK) {
 		free(CK);
 		ck_hs_destroy(&ck);
+	}
+
+	COND(DATA_CK_RHS) {
+		free(CK_RHS);
+		ck_rhs_destroy(&rhs_ck);
 	}
 #endif
 }
@@ -1255,6 +1237,14 @@ void test_insert(unsigned* INSERT)
 		CK[i].value = key;
 		hash_key = CK_HS_HASH(&ck, hs_hash, &CK[i]);
 		ck_hs_put(&ck, hash_key, &CK[i]);
+	} STOP();
+
+	START(DATA_CK_RHS) {
+		unsigned key = INSERT[i];
+		unsigned hash_key;
+		CK_RHS[i].value = key;
+		hash_key = CK_RHS_HASH(&rhs_ck, hs_hash, &CK_RHS[i]);
+		ck_rhs_put(&rhs_ck, hash_key, &CK_RHS[i]);
 	} STOP();
 #endif
 }
@@ -1532,6 +1522,22 @@ void test_hit(unsigned* SEARCH)
 				abort();
 		}
 	} STOP();
+
+	START(DATA_CK_RHS) {
+		unsigned key = SEARCH[i] + DELTA;
+		unsigned hash_key;
+		struct ck_object obj_key;
+		struct ck_object* obj;
+		obj_key.value = key;
+		hash_key = CK_RHS_HASH(&rhs_ck, hs_hash, &obj_key);
+		obj = (struct ck_object*)ck_rhs_get(&rhs_ck, hash_key, &obj_key);
+		if (!obj)
+			abort();
+		if (dereference) {
+			if (obj->value != key)
+				abort();
+		}
+	} STOP();
 #endif
 }
 
@@ -1715,6 +1721,18 @@ void test_miss(unsigned* SEARCH)
 		obj_key.value = key;
 		hash_key = CK_HS_HASH(&ck, hs_hash, &obj_key);
 		obj = (struct ck_object*)ck_hs_get(&ck, hash_key, &obj_key);
+		if (obj)
+			abort();
+	} STOP();
+
+	START(DATA_CK_RHS) {
+		unsigned key = SEARCH[i] + DELTA;
+		unsigned hash_key;
+		struct ck_object obj_key;
+		struct ck_object* obj;
+		obj_key.value = key;
+		hash_key = CK_RHS_HASH(&rhs_ck, hs_hash, &obj_key);
+		obj = (struct ck_object*)ck_rhs_get(&rhs_ck, hash_key, &obj_key);
 		if (obj)
 			abort();
 	} STOP();
@@ -2028,6 +2046,23 @@ void test_change(unsigned* REMOVE, unsigned* INSERT)
 		hash_key = CK_HS_HASH(&ck, hs_hash, obj);
 		ck_hs_put(&ck, hash_key, obj);
 	} STOP();
+
+	START(DATA_CK_RHS) {
+		unsigned key = REMOVE[i];
+		unsigned hash_key;
+		struct ck_object obj_key;
+		struct ck_object* obj;
+		obj_key.value = key;
+		hash_key = CK_RHS_HASH(&rhs_ck, hs_hash, &obj_key);
+		obj = (struct ck_object*)ck_rhs_remove(&rhs_ck, hash_key, &obj_key);
+		if (!obj)
+			abort();
+
+		key = INSERT[i] + DELTA;
+		obj->value = key;
+		hash_key = CK_RHS_HASH(&rhs_ck, hs_hash, obj);
+		ck_rhs_put(&rhs_ck, hash_key, obj);
+	} STOP();
 #endif
 }
 
@@ -2334,6 +2369,22 @@ void test_remove(unsigned* REMOVE)
 		obj_key.value = key;
 		hash_key = CK_HS_HASH(&ck, hs_hash, &obj_key);
 		obj = (struct ck_object*)ck_hs_remove(&ck, hash_key, &obj_key);
+		if (!obj)
+			abort();
+		if (dereference) {
+			if (obj->value != key)
+				abort();
+		}
+	} STOP();
+
+	START(DATA_CK_RHS) {
+		unsigned key = REMOVE[i] + DELTA;
+		unsigned hash_key;
+		struct ck_object obj_key;
+		struct ck_object* obj;
+		obj_key.value = key;
+		hash_key = CK_RHS_HASH(&rhs_ck, hs_hash, &obj_key);
+		obj = (struct ck_object*)ck_rhs_remove(&rhs_ck, hash_key, &obj_key);
 		if (!obj)
 			abort();
 		if (dereference) {
